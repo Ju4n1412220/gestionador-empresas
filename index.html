@@ -1929,13 +1929,14 @@ function reiniciarBaseCompleta(){
   _migracionInicialEnCurso=true; // bloquea cualquier resiembra automática cruzada mientras dure esto
   _db.collection('gestiones').get().then(function(snap){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
-    toast('Borrando '+docs.length+' empresa(s) y su bitácora...','ok');
-    return ejecutarEnGrupos(docs,25,function(d){
+    toast('Borrando '+docs.length+' empresa(s) y su bitácora... esto puede tardar 1-2 minutos, no cierres ni cambies de pantalla','ok');
+    return ejecutarEnGrupos(docs,100,function(d){
       return d.ref.collection('historial').get().then(function(hsnap){
         var hdocs=[]; hsnap.forEach(function(hd){hdocs.push(hd);});
         return procesarEnLotesFirestore(hdocs,function(batch,hd){ batch.delete(hd.ref); });
       });
     }).then(function(){
+      toast('Bitácora borrada, borrando las '+docs.length+' empresas...','ok');
       return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
     });
   }).then(function(){
