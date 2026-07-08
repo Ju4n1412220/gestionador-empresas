@@ -416,16 +416,8 @@ function iniciarFirebase(){
       snap.forEach(function(doc){ nuevo.push(Object.assign({id:doc.id},doc.data())); });
       var primeraVez=!_lotesListo;
       _lotesCache=nuevo;
-      if(primeraVez){
-        _lotesListo=true;
-        // Si nadie en el equipo ha registrado el lote inicial todavía, se
-        // crea una sola vez (comparado contra los leads locales de este
-        // navegador — el primero en conectar lo establece para todos).
-        if(!nuevo.some(function(x){return x.id===LOTE_INICIAL_ID;})){
-          var leadsIniciales=L().filter(function(l){return l.loteId===LOTE_INICIAL_ID;});
-          guardarLoteDoc(LOTE_INICIAL_ID,{nombre:'Lote inicial',fecha:Date.now(),registros:leadsIniciales.length});
-        }
-      } else if(CU){ refrescarVista(); }
+      _lotesListo=true;
+      if(!primeraVez && CU){ refrescarVista(); }
     });
   });
 }
@@ -566,7 +558,7 @@ function iniciarListenerGestiones(){
  * pantallas que la necesitan — igual de útil, muchísimo más barato.
  */
 function cargarPoolSinAsignar(){
-  _db.collection('gestiones').where('agente','==',null).limit(POOL_SIN_ASIGNAR_LIMITE).get()
+  return _db.collection('gestiones').where('agente','==',null).limit(POOL_SIN_ASIGNAR_LIMITE).get()
     .then(function(snap){
       var arr=[]; snap.forEach(function(doc){ arr.push(Object.assign({id:doc.id},doc.data())); });
       _leadsPorFuente['sinasignar']=arr;
@@ -574,7 +566,7 @@ function cargarPoolSinAsignar(){
     }).catch(function(e){ toast('Error leyendo empresas sin asignar: '+e.message,'err'); });
 }
 function cargarBaseCompletaAdmin(){
-  _db.collection('gestiones').get().then(function(snap){
+  return _db.collection('gestiones').get().then(function(snap){
     var arr=[]; snap.forEach(function(doc){ arr.push(Object.assign({id:doc.id},doc.data())); });
     _leadsPorFuente['todo']=arr;
     if(window._recomputarLeads) window._recomputarLeads();
@@ -584,9 +576,10 @@ function cargarBaseCompletaAdmin(){
 /* Botón "Actualizar" de Dashboard/Monitoreo/Asignar Base/Reportes/Actualizar
  * Datos: fuerza una relectura puntual en vez de depender de un stream. */
 function refrescarBaseBajoDemanda(){
-  if(!CU) return;
-  if(CU.role==='admin') cargarBaseCompletaAdmin();
-  else if(CU.role==='supervisor') cargarPoolSinAsignar();
+  if(!CU) return Promise.resolve();
+  if(CU.role==='admin') return cargarBaseCompletaAdmin();
+  if(CU.role==='supervisor') return cargarPoolSinAsignar();
+  return Promise.resolve();
 }
 
 /* Migración de una sola vez: si la colección "gestiones" está totalmente
@@ -738,6 +731,8 @@ function cargarLoteDesdeArchivo(){
         batch.set(_db.collection('gestiones').doc(l.id),data);
       }).then(function(){
         guardarLoteDoc(loteId,{nombre:nombreLote,fecha:Date.now(),registros:agregados});
+        return refrescarBaseBajoDemanda();
+      }).then(function(){
         toast(agregados+' registro(s) agregados en el lote "'+nombreLote+'"','ok');
         fileInput.value=''; nombreInput.value='';
         pgActualizar(document.getElementById('main'));
@@ -750,6 +745,12 @@ function cargarLoteDesdeArchivo(){
 }
 function eliminarLote(loteId){
   toast('Eliminando base...','ok');
+  // Quita optimista: se ve reflejado de inmediato en pantalla mientras se
+  // confirma la eliminación real en Firestore.
+  Object.keys(_leadsPorFuente).forEach(function(k){
+    _leadsPorFuente[k]=_leadsPorFuente[k].filter(function(l){return l.loteId!==loteId;});
+  });
+  if(window._recomputarLeads) window._recomputarLeads();
   _db.collection('gestiones').where('loteId','==',loteId).get().then(function(snap){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
     // Primero se borra la bitácora (subcolección) de cada empresa, para no
@@ -766,6 +767,8 @@ function eliminarLote(loteId){
     });
   }).then(function(){
     return borrarLoteDoc(loteId);
+  }).then(function(){
+    return refrescarBaseBajoDemanda();
   }).then(function(){
     toast('Base eliminada','ok');
     pgActualizar(document.getElementById('main'));
