@@ -570,8 +570,20 @@ function cargarBaseCompletaAdmin(){
     var arr=[]; snap.forEach(function(doc){ arr.push(Object.assign({id:doc.id},doc.data())); });
     _leadsPorFuente['todo']=arr;
     if(window._recomputarLeads) window._recomputarLeads();
-    if(arr.length===0) migrarBaseInicialAFirestoreSiHaceFalta();
+    if(arr.length===0) return verificarPrimeraVezYSembrar();
   }).catch(function(e){ toast('Error leyendo la base: '+e.message,'err'); });
+}
+/* Si la base está vacía, hay dos posibilidades muy distintas: (a) nunca se
+ * ha cargado nada, o (b) alguien la vació a propósito (borró "Lote inicial"
+ * o usó "Reiniciar base completa" y decidió no resembrar). Para no
+ * confundir una con otra, se usa un marcador permanente en Firestore en
+ * vez de simplemente "¿está vacía ahora?" — así, una vez borrada a
+ * propósito, se queda borrada para siempre y no reaparece sola. */
+function verificarPrimeraVezYSembrar(){
+  return _db.collection('_meta').doc('sistema').get().then(function(doc){
+    if(doc.exists && doc.data().baseInicializada) return; // ya se inicializó alguna vez, no se resiembra sola
+    return migrarBaseInicialAFirestoreSiHaceFalta();
+  }).catch(function(){/* si no se puede leer el marcador, no se arriesga a duplicar */});
 }
 /* Botón "Actualizar" de Dashboard/Monitoreo/Asignar Base/Reportes/Actualizar
  * Datos: fuerza una relectura puntual en vez de depender de un stream. */
@@ -607,6 +619,7 @@ function migrarBaseInicialAFirestoreSiHaceFalta(){
     });
   }).then(function(){
     guardarLoteDoc(LOTE_INICIAL_ID,{nombre:'Lote inicial',fecha:Date.now(),registros:total});
+    _db.collection('_meta').doc('sistema').set({baseInicializada:true},{merge:true});
     toast('Base inicial cargada a Firestore: '+total+' empresas','ok');
     _migracionInicialEnCurso=false;
   }).catch(function(e){
@@ -1869,16 +1882,21 @@ function pgActualizar(M){
   h+='<div class="panel" style="border-color:var(--rd)"><div class="panel-h"><h3 style="color:var(--rd)">⚠️ Reiniciar toda la base</h3></div>'
     +'<div class="panel-sub">Borra TODAS las empresas, su bitácora completa y todos los lotes cargados, y vuelve a subir la base original de '+(window.EMPRESAS_RAW?EMPRESAS_RAW.length:0)+' empresas, limpia, sin agente asignado, sin gestiones. Las asignaciones de campus de cada agente NO se tocan. <b>Esta acción no se puede deshacer.</b></div>'
     +'<div class="frow"><div><span class="flabel">Escribe BORRAR TODO para confirmar</span><input class="f" id="reset-confirm" placeholder="BORRAR TODO"></div><div></div></div>'
-    +'<button class="btn dan" onclick="reiniciarBaseCompleta()">🗑️ Reiniciar base completa</button></div>';
+    +'<button class="btn dan" id="btn-reset-base" onclick="reiniciarBaseCompleta()">🗑️ Reiniciar base completa</button></div>';
 
   M.innerHTML=h;
 }
 function reiniciarBaseCompleta(){
   var txt=(document.getElementById('reset-confirm').value||'').trim();
   if(txt!=='BORRAR TODO'){ toast('Escribe exactamente "BORRAR TODO" para confirmar','err'); return; }
+  if(!window.EMPRESAS_RAW||!EMPRESAS_RAW.length){ toast('No se encontró la fuente de datos original en este archivo','err'); return; }
+  document.getElementById('reset-confirm').disabled=true;
+  document.getElementById('btn-reset-base').disabled=true;
   toast('Borrando toda la base, puede tardar un poco...','ok');
+  _migracionInicialEnCurso=true; // bloquea cualquier resiembra automática cruzada mientras dure esto
   _db.collection('gestiones').get().then(function(snap){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
+    toast('Borrando '+docs.length+' empresa(s) y su bitácora...','ok');
     var borrarHistoriales=docs.map(function(d){
       return d.ref.collection('historial').get().then(function(hsnap){
         var hdocs=[]; hsnap.forEach(function(hd){hdocs.push(hd);});
@@ -1894,14 +1912,53 @@ function reiniciarBaseCompleta(){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
     return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
   }).then(function(){
-    toast('Base borrada. Subiendo la base original limpia...','ok');
-    _leadsCache=[]; _leadsPorFuente={};
-    return migrarBaseInicialAFirestoreSiHaceFalta();
+    // Confirmar que de verdad quedó vacío antes de resembrar.
+    return _db.collection('gestiones').get();
+  }).then(function(snap){
+    if(!snap.empty){ throw new Error('Quedaron '+snap.size+' registro(s) sin borrar — no se resembró para evitar duplicar. Intenta de nuevo.'); }
+    var total=EMPRESAS_RAW.length;
+    toast('Base borrada. Subiendo '+total+' empresas originales...','ok');
+    var indices=EMPRESAS_RAW.map(function(_,i){return i;});
+    return procesarEnLotesFirestore(indices,function(batch,j){
+      var r=EMPRESAS_RAW[j];
+      var ref=_db.collection('gestiones').doc('E'+j);
+      batch.set(ref,{
+        zona:r[0],nombre:r[1],telefono:r[2],direccion:r[3],estadoDato:r[4],categoria:r[5],
+        colaboradores:r[6],tipoDato:r[7],nota:r[8],
+        etapa:'Nuevo',agente:null,proximoSeguimiento:null,proximaVisita:null,
+        contactoNombre:'',contactoPuesto:'',contactoTelefono:'',contactoEmail:'',
+        lote:'Lote inicial',loteId:LOTE_INICIAL_ID,createdAt:Date.now()
+      });
+    }).then(function(){
+      return guardarLoteDoc(LOTE_INICIAL_ID,{nombre:'Lote inicial',fecha:Date.now(),registros:total});
+    }).then(function(){
+      return _db.collection('_meta').doc('sistema').set({baseInicializada:true},{merge:true});
+    }).then(function(){
+      return total;
+    });
+  }).then(function(total){
+    // Verificación final: contar de verdad lo que quedó en Firestore.
+    return _db.collection('gestiones').get().then(function(snap){
+      if(snap.size!==total){
+        toast('⚠️ Se esperaban '+total+' empresas pero quedaron '+snap.size+'. Vuelve a intentar "Reiniciar base completa".','err');
+      } else {
+        toast('Listo — base reiniciada desde cero con '+snap.size+' empresas','ok');
+      }
+    });
   }).then(function(){
-    toast('Listo — base reiniciada desde cero','ok');
-    cargarBaseCompletaAdmin();
+    _migracionInicialEnCurso=false;
+    document.getElementById('reset-confirm').disabled=false;
+    document.getElementById('btn-reset-base').disabled=false;
+    _leadsCache=[]; _leadsPorFuente={};
+    return cargarBaseCompletaAdmin();
+  }).then(function(){
     pgActualizar(document.getElementById('main'));
-  }).catch(function(e){ toast('Error al reiniciar: '+e.message,'err'); });
+  }).catch(function(e){
+    _migracionInicialEnCurso=false;
+    document.getElementById('reset-confirm').disabled=false;
+    document.getElementById('btn-reset-base').disabled=false;
+    toast('Error al reiniciar: '+e.message,'err');
+  });
 }
 
 /* ══════════════════ USUARIOS (admin) — baja lógica, no borrado real ══════════════════
