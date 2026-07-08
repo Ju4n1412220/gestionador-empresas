@@ -571,6 +571,11 @@ function cargarBaseCompletaAdmin(){
     _leadsPorFuente['todo']=arr;
     if(window._recomputarLeads) window._recomputarLeads();
     if(arr.length===0) return verificarPrimeraVezYSembrar();
+    // Marca retroactiva: si ya hay datos pero el marcador no existe todavía
+    // (bases creadas antes de que existiera este marcador), se deja
+    // registrado para que de aquí en adelante un vaciado a propósito no
+    // se vuelva a resembrar solo.
+    _db.collection('_meta').doc('sistema').set({baseInicializada:true},{merge:true}).catch(function(){});
   }).catch(function(e){ toast('Error leyendo la base: '+e.message,'err'); });
 }
 /* Si la base está vacía, hay dos posibilidades muy distintas: (a) nunca se
@@ -580,6 +585,7 @@ function cargarBaseCompletaAdmin(){
  * vez de simplemente "¿está vacía ahora?" — así, una vez borrada a
  * propósito, se queda borrada para siempre y no reaparece sola. */
 function verificarPrimeraVezYSembrar(){
+  if(_migracionInicialEnCurso) return Promise.resolve(); // alguien más ya está en medio de una operación (borrar/reiniciar) — no interferir
   return _db.collection('_meta').doc('sistema').get().then(function(doc){
     if(doc.exists && doc.data().baseInicializada) return; // ya se inicializó alguna vez, no se resiembra sola
     return migrarBaseInicialAFirestoreSiHaceFalta();
@@ -598,32 +604,48 @@ function refrescarBaseBajoDemanda(){
  * vacía (nadie del equipo la ha cargado todavía), se sube la base inicial
  * embebida en este archivo. Solo lo dispara el admin (es el único con
  * lectura sin filtro, así que es el único que puede confirmar que de
- * verdad está vacía para todos, no solo "vacía para mí"). */
+ * verdad está vacía para todos, no solo "vacía para mí"). Verifica contra
+ * Firestore directamente (no contra la caché en memoria, que puede estar
+ * vieja) antes de escribir, y cuenta el resultado final antes de darse
+ * por satisfecha — así nunca se queda a medias sin avisar. */
 var _migracionInicialEnCurso=false;
 function migrarBaseInicialAFirestoreSiHaceFalta(){
-  if(_leadsCache.length>0||_migracionInicialEnCurso) return;
-  if(!window.EMPRESAS_RAW||!EMPRESAS_RAW.length) return;
+  if(_migracionInicialEnCurso) return Promise.resolve();
+  if(!window.EMPRESAS_RAW||!EMPRESAS_RAW.length) return Promise.resolve();
   _migracionInicialEnCurso=true;
-  toast('Cargando base inicial a Firestore por primera vez (única vez para todo el equipo)...','ok');
-  var total=EMPRESAS_RAW.length;
-  var indices=EMPRESAS_RAW.map(function(_,i){return i;});
-  procesarEnLotesFirestore(indices,function(batch,j){
-    var r=EMPRESAS_RAW[j];
-    var ref=_db.collection('gestiones').doc('E'+j);
-    batch.set(ref,{
-      zona:r[0],nombre:r[1],telefono:r[2],direccion:r[3],estadoDato:r[4],categoria:r[5],
-      colaboradores:r[6],tipoDato:r[7],nota:r[8],
-      etapa:'Nuevo',agente:null,proximoSeguimiento:null,proximaVisita:null,
-      contactoNombre:'',contactoPuesto:'',contactoTelefono:'',contactoEmail:'',
-      lote:'Lote inicial',loteId:LOTE_INICIAL_ID,createdAt:Date.now()
+  return _db.collection('gestiones').limit(1).get().then(function(snap){
+    if(!snap.empty){ _migracionInicialEnCurso=false; return; } // alguien más ya la cargó justo antes — no duplicar
+    toast('Cargando base inicial a Firestore por primera vez (única vez para todo el equipo)...','ok');
+    var total=EMPRESAS_RAW.length;
+    var indices=EMPRESAS_RAW.map(function(_,i){return i;});
+    return procesarEnLotesFirestore(indices,function(batch,j){
+      var r=EMPRESAS_RAW[j];
+      var ref=_db.collection('gestiones').doc('E'+j);
+      batch.set(ref,{
+        zona:r[0],nombre:r[1],telefono:r[2],direccion:r[3],estadoDato:r[4],categoria:r[5],
+        colaboradores:r[6],tipoDato:r[7],nota:r[8],
+        etapa:'Nuevo',agente:null,proximoSeguimiento:null,proximaVisita:null,
+        contactoNombre:'',contactoPuesto:'',contactoTelefono:'',contactoEmail:'',
+        lote:'Lote inicial',loteId:LOTE_INICIAL_ID,createdAt:Date.now()
+      });
+    }).then(function(){
+      return guardarLoteDoc(LOTE_INICIAL_ID,{nombre:'Lote inicial',fecha:Date.now(),registros:total});
+    }).then(function(){
+      return _db.collection('_meta').doc('sistema').set({baseInicializada:true},{merge:true});
+    }).then(function(){
+      return _db.collection('gestiones').get();
+    }).then(function(snapFinal){
+      if(snapFinal.size!==total){
+        toast('⚠️ Se esperaban '+total+' empresas pero quedaron '+snapFinal.size+'. Usa "Reiniciar base completa" en Actualizar Datos para corregirlo.','err');
+      } else {
+        toast('Base inicial cargada a Firestore: '+total+' empresas','ok');
+      }
+      _leadsCache=[]; _leadsPorFuente={};
+      return cargarBaseCompletaAdmin();
     });
-  }).then(function(){
-    guardarLoteDoc(LOTE_INICIAL_ID,{nombre:'Lote inicial',fecha:Date.now(),registros:total});
-    _db.collection('_meta').doc('sistema').set({baseInicializada:true},{merge:true});
-    toast('Base inicial cargada a Firestore: '+total+' empresas','ok');
-    _migracionInicialEnCurso=false;
   }).catch(function(e){
     toast('Error cargando la base inicial: '+e.message,'err');
+  }).then(function(){
     _migracionInicialEnCurso=false;
   });
 }
@@ -758,6 +780,7 @@ function cargarLoteDesdeArchivo(){
 }
 function eliminarLote(loteId){
   toast('Eliminando base...','ok');
+  _migracionInicialEnCurso=true; // evita que una resiembra automática se cruce mientras se borra
   // Quita optimista: se ve reflejado de inmediato en pantalla mientras se
   // confirma la eliminación real en Firestore.
   Object.keys(_leadsPorFuente).forEach(function(k){
@@ -781,11 +804,15 @@ function eliminarLote(loteId){
   }).then(function(){
     return borrarLoteDoc(loteId);
   }).then(function(){
+    _migracionInicialEnCurso=false;
     return refrescarBaseBajoDemanda();
   }).then(function(){
     toast('Base eliminada','ok');
     pgActualizar(document.getElementById('main'));
-  }).catch(function(e){ toast('Error al eliminar: '+e.message,'err'); });
+  }).catch(function(e){
+    _migracionInicialEnCurso=false;
+    toast('Error al eliminar: '+e.message,'err');
+  });
 }
 
 /* Catálogo de zonas (campus): se deriva directamente de la fuente de datos.
