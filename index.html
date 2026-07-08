@@ -857,6 +857,8 @@ function doLogout(){
   if(window._sessionCheckTimer){clearInterval(window._sessionCheckTimer);window._sessionCheckTimer=null;}
   if(window._monTimer){clearInterval(window._monTimer);window._monTimer=null;}
   detenerListenerChat();
+  detenerHeartbeatPresencia();
+  detenerListenerPresencia();
   cerrarChat();
   _leadsUnsubs.forEach(function(u){u();}); _leadsUnsubs=[]; _leadsCache=[]; _leadsListo=false;
   CU=null;
@@ -962,6 +964,8 @@ function enterApp(){
   initChatBoton();
   actualizarBadgeChat();
   iniciarListenerChat();
+  iniciarHeartbeatPresencia();
+  iniciarListenerPresencia();
 }
 
 /* ══════════════════ NAV ══════════════════
@@ -1866,7 +1870,43 @@ function pgActualizar(M){
     h+='</tbody></table>';
   }
   h+='</div>';
+
+  h+='<div class="panel" style="border-color:var(--rd)"><div class="panel-h"><h3 style="color:var(--rd)">⚠️ Reiniciar toda la base</h3></div>'
+    +'<div class="panel-sub">Borra TODAS las empresas, su bitácora completa y todos los lotes cargados, y vuelve a subir la base original de '+(window.EMPRESAS_RAW?EMPRESAS_RAW.length:0)+' empresas, limpia, sin agente asignado, sin gestiones. Las asignaciones de campus de cada agente NO se tocan. <b>Esta acción no se puede deshacer.</b></div>'
+    +'<div class="frow"><div><span class="flabel">Escribe BORRAR TODO para confirmar</span><input class="f" id="reset-confirm" placeholder="BORRAR TODO"></div><div></div></div>'
+    +'<button class="btn dan" onclick="reiniciarBaseCompleta()">🗑️ Reiniciar base completa</button></div>';
+
   M.innerHTML=h;
+}
+function reiniciarBaseCompleta(){
+  var txt=(document.getElementById('reset-confirm').value||'').trim();
+  if(txt!=='BORRAR TODO'){ toast('Escribe exactamente "BORRAR TODO" para confirmar','err'); return; }
+  toast('Borrando toda la base, puede tardar un poco...','ok');
+  _db.collection('gestiones').get().then(function(snap){
+    var docs=[]; snap.forEach(function(d){docs.push(d);});
+    var borrarHistoriales=docs.map(function(d){
+      return d.ref.collection('historial').get().then(function(hsnap){
+        var hdocs=[]; hsnap.forEach(function(hd){hdocs.push(hd);});
+        return procesarEnLotesFirestore(hdocs,function(batch,hd){ batch.delete(hd.ref); });
+      });
+    });
+    return Promise.all(borrarHistoriales).then(function(){
+      return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
+    });
+  }).then(function(){
+    return _db.collection('lotes').get();
+  }).then(function(snap){
+    var docs=[]; snap.forEach(function(d){docs.push(d);});
+    return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
+  }).then(function(){
+    toast('Base borrada. Subiendo la base original limpia...','ok');
+    _leadsCache=[]; _leadsPorFuente={};
+    return migrarBaseInicialAFirestoreSiHaceFalta();
+  }).then(function(){
+    toast('Listo — base reiniciada desde cero','ok');
+    cargarBaseCompletaAdmin();
+    pgActualizar(document.getElementById('main'));
+  }).catch(function(e){ toast('Error al reiniciar: '+e.message,'err'); });
 }
 
 /* ══════════════════ USUARIOS (admin) — baja lógica, no borrado real ══════════════════
@@ -2024,7 +2064,7 @@ function pgMonitoreo(M){
     });
     var ganadosHoy=la.filter(function(l){return l.etapa==='Ganado'&&l.ultimaGestionFecha&&new Date(l.ultimaGestionFecha).toDateString()===hoy&&l.ultimaCalificacion&&l.ultimaCalificacion.indexOf('Cerrado')>-1;}).length;
     var pendientes=la.filter(function(l){return l.etapa==='Nuevo';}).length;
-    var estado=gestHoy>0?'activo':(ultimaGestion?'inactivo':'sin_iniciar');
+    var estado=estadoPresenciaReal(a);
     return {a:a,name:us[a].name,campus:campus,regiones:regionesAg,total:la.length,gestHoy:gestHoy,ganadosHoy:ganadosHoy,pendientes:pendientes,ultimaGestion:ultimaGestion,estado:estado};
   }).filter(function(f){
     if(_monFRegion && f.regiones.indexOf(_monFRegion)<0) return false;
@@ -2045,7 +2085,7 @@ function pgMonitoreo(M){
 
   var h='<div class="panel">'
     +'<div class="panel-h"><h3>Monitoreo de agentes</h3><button class="btn sec" onclick="refrescarBaseBajoDemanda();pgMonitoreo(document.getElementById(\'main\'))">↺ Actualizar</button></div>'
-    +'<div class="panel-sub">Estado inferido de la actividad de hoy (gestiones registradas en la bitácora). No requiere conexión en vivo.</div>'
+    +'<div class="panel-sub">Estado en tiempo real: cada agente manda una señal de conexión cada 5 minutos mientras tiene la sesión abierta. Si no hay señal en los últimos 10 minutos, se marca inactivo aunque no haya cerrado sesión formalmente.</div>'
     +'<div class="toolbar">'
     +'<input class="f" style="width:220px" placeholder="Buscar agente, campus..." value="'+esc(_monBusqueda)+'" oninput="_monBusqueda=this.value;_monPag=0;pgMonitoreo(document.getElementById(\'main\'))">'
     +'<select class="f" style="width:170px" onchange="_monFRegion=this.value;_monFCampus=\'\';_monPag=0;pgMonitoreo(document.getElementById(\'main\'))"><option value="">Todas las zonas</option>'+regiones.map(function(r){return '<option '+(r===_monFRegion?'selected':'')+'>'+esc(r)+'</option>';}).join('')+'</select>'
@@ -2342,6 +2382,78 @@ function iniciarListenerChat(){
   },function(err){ toast('Error leyendo chat: '+err.message,'err'); });
   _mensajesUnsubs.push(u1,u2);
 }
+/* ══════════════════ PRESENCIA REAL — FASE 5: Monitoreo en vivo de verdad ══════════════════
+ * Antes, "activo/inactivo" en Monitoreo se inferÍa de si hubo una gestión
+ * hoy (una aproximación). Ahora cada agente manda una señal de vida
+ * ("heartbeat") a agentes_estado/{username} cada 5 minutos mientras tenga
+ * la sesión abierta — igual de "en vivo" que el original, pero con un
+ * intervalo pensado para no gastar de más la cuota gratis de escrituras:
+ * con 110 agentes trabajando ~10 horas, son ~13,000 escrituras/día, muy
+ * por debajo del límite gratis de 20,000/día.
+ * Solo los agentes mandan heartbeat (son los únicos que Monitoreo vigila).
+ */
+var _heartbeatTimer=null;
+var _presenciaCache={}, _presenciaUnsubs=[];
+var PRESENCIA_INTERVALO_MS=5*60*1000; // 5 minutos
+var PRESENCIA_VENCE_MIN=10; // si no hay señal en 10 min, se considera inactivo aunque diga "activo"
+
+function actualizarPresencia(estado){
+  if(!CU||!_db||CU.role!=='agent') return;
+  _db.collection('agentes_estado').doc(CU.username).set({
+    estado:estado||'activo', ultimaActividad:Date.now(), nombre:CU.name
+  },{merge:true}).catch(function(){/* si falla un heartbeat no pasa nada, se reintenta en el siguiente */});
+}
+function iniciarHeartbeatPresencia(){
+  if(CU.role!=='agent') return;
+  actualizarPresencia('activo');
+  if(_heartbeatTimer) clearInterval(_heartbeatTimer);
+  _heartbeatTimer=setInterval(function(){ actualizarPresencia('activo'); },PRESENCIA_INTERVALO_MS);
+}
+function detenerHeartbeatPresencia(){
+  if(_heartbeatTimer){ clearInterval(_heartbeatTimer); _heartbeatTimer=null; }
+  if(CU&&CU.role==='agent') actualizarPresencia('desconectado');
+}
+/* admin/supervisor escuchan la presencia de los agentes que les toca ver
+ * (colección chiquita: 1 documento por agente, nada que ver con el
+ * tamaño de "gestiones" — un listener permanente aquí es barato). */
+function iniciarListenerPresencia(){
+  _presenciaUnsubs.forEach(function(u){u();}); _presenciaUnsubs=[]; _presenciaCache={};
+  if(CU.role==='agent') return; // un agente no necesita ver la presencia de nadie
+  if(CU.role==='admin'){
+    var unsub=_db.collection('agentes_estado').onSnapshot(function(snap){
+      var nuevo={}; snap.forEach(function(d){ nuevo[d.id]=d.data(); });
+      _presenciaCache=nuevo;
+      if(CU) refrescarVista();
+    },function(){/* si falla, Monitoreo simplemente mostrará "sin_iniciar" */});
+    _presenciaUnsubs.push(unsub);
+  } else if(CU.role==='supervisor'){
+    var us=U();
+    var miEquipo=Object.keys(us).filter(function(k){return us[k].role==='agent'&&us[k].supervisor===CU.username;});
+    for(var i=0;i<miEquipo.length;i+=30){
+      (function(chunk){
+        var unsub=_db.collection('agentes_estado').where(firebase.firestore.FieldPath.documentId(),'in',chunk).onSnapshot(function(snap){
+          snap.forEach(function(d){ _presenciaCache[d.id]=d.data(); });
+          if(CU) refrescarVista();
+        });
+        _presenciaUnsubs.push(unsub);
+      })(miEquipo.slice(i,i+30));
+    }
+  }
+}
+function detenerListenerPresencia(){
+  _presenciaUnsubs.forEach(function(u){u();}); _presenciaUnsubs=[]; _presenciaCache={};
+}
+/* Un heartbeat vencido (pestaña cerrada sin cerrar sesión) se trata como
+ * inactivo aunque el último estado guardado diga "activo". */
+function estadoPresenciaReal(username){
+  var p=_presenciaCache[username];
+  if(!p||!p.ultimaActividad) return 'sin_iniciar';
+  if(p.estado==='desconectado') return 'inactivo';
+  var minutos=(Date.now()-p.ultimaActividad)/60000;
+  return minutos>PRESENCIA_VENCE_MIN?'inactivo':'activo';
+}
+
+
 function detenerListenerChat(){
   _mensajesUnsubs.forEach(function(u){u();}); _mensajesUnsubs=[];
   _mensajesCache=[]; _chatListo=false;
