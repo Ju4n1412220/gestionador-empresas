@@ -189,13 +189,6 @@ select.f[multiple]{min-height:120px}
     <button class="lbtn" id="btnLogin" disabled>Ingresar</button>
     <div id="lconn" style="font-size:11px;color:var(--c2);margin-top:.6rem;text-align:center;font-weight:600">🔄 Conectando con el servidor...</div>
     <div class="lerr" id="lerr">Usuario o contraseña incorrectos</div>
-    <div class="lhint">
-      <b>Cuentas demo</b> — usuarios ya viven en Firebase (compartidos entre dispositivos); el resto de la base sigue local por ahora, fase por fase.<br>
-      admin / admin123 — Administrador<br>
-      supervisor1 / super123 — Supervisor<br>
-      agente1 / agente123 — Agente<br>
-      agente2 / agente123 — Agente
-    </div>
   </div>
 </div>
 
@@ -504,6 +497,20 @@ function procesarEnLotesFirestore(items,fn){
   }
   return siguiente();
 }
+/* Ejecuta muchas operaciones asíncronas (ej. leer subcolecciones) en grupos
+ * pequeños concurrentes en vez de todas a la vez — con miles de empresas,
+ * lanzarlas todas de golpe satura la conexión de Firestore y corta el
+ * proceso a la mitad, dejando datos a medio borrar/subir sin avisar. */
+function ejecutarEnGrupos(items,tamGrupo,fn){
+  var i=0;
+  function siguienteGrupo(){
+    if(i>=items.length) return Promise.resolve();
+    var grupo=items.slice(i,i+tamGrupo);
+    i+=tamGrupo;
+    return Promise.all(grupo.map(fn)).then(siguienteGrupo);
+  }
+  return siguienteGrupo();
+}
 
 var POOL_SIN_ASIGNAR_LIMITE=300;
 
@@ -791,14 +798,13 @@ function eliminarLote(loteId){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
     // Primero se borra la bitácora (subcolección) de cada empresa, para no
     // dejar historial huérfano que luego aparezca en los reportes por
-    // collectionGroup.
-    var borrarHistoriales=docs.map(function(d){
+    // collectionGroup. Se hace en grupos de 25 para no saturar Firestore.
+    return ejecutarEnGrupos(docs,25,function(d){
       return d.ref.collection('historial').get().then(function(hsnap){
         var hdocs=[]; hsnap.forEach(function(hd){hdocs.push(hd);});
         return procesarEnLotesFirestore(hdocs,function(batch,hd){ batch.delete(hd.ref); });
       });
-    });
-    return Promise.all(borrarHistoriales).then(function(){
+    }).then(function(){
       return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
     });
   }).then(function(){
@@ -1924,13 +1930,12 @@ function reiniciarBaseCompleta(){
   _db.collection('gestiones').get().then(function(snap){
     var docs=[]; snap.forEach(function(d){docs.push(d);});
     toast('Borrando '+docs.length+' empresa(s) y su bitácora...','ok');
-    var borrarHistoriales=docs.map(function(d){
+    return ejecutarEnGrupos(docs,25,function(d){
       return d.ref.collection('historial').get().then(function(hsnap){
         var hdocs=[]; hsnap.forEach(function(hd){hdocs.push(hd);});
         return procesarEnLotesFirestore(hdocs,function(batch,hd){ batch.delete(hd.ref); });
       });
-    });
-    return Promise.all(borrarHistoriales).then(function(){
+    }).then(function(){
       return procesarEnLotesFirestore(docs,function(batch,d){ batch.delete(d.ref); });
     });
   }).then(function(){
