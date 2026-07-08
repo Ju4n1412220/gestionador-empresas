@@ -19,11 +19,8 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 button{font-family:inherit;cursor:pointer}
 input,select,textarea{font-family:inherit}
 
-#testbanner{position:fixed;top:0;left:0;right:0;height:26px;background:repeating-linear-gradient(135deg,var(--am),var(--am) 10px,var(--am2) 10px,var(--am2) 20px);color:#fff;font-weight:800;font-size:11px;letter-spacing:.06em;display:flex;align-items:center;justify-content:center;z-index:10000;text-transform:uppercase}
-#testbanner span{background:rgba(26,35,50,.75);color:#fff;padding:2px 10px;border-radius:4px}
-body{padding-top:26px}
 
-#login{position:fixed;inset:26px 0 0 0;background:radial-gradient(ellipse at 20% 20%,rgba(38,169,224,.12) 0%,transparent 55%),radial-gradient(ellipse at 85% 80%,rgba(240,90,40,.08) 0%,transparent 55%),#FFFFFF;display:flex;align-items:center;justify-content:center;z-index:9999}
+#login{position:fixed;inset:0;background:radial-gradient(ellipse at 20% 20%,rgba(38,169,224,.12) 0%,transparent 55%),radial-gradient(ellipse at 85% 80%,rgba(240,90,40,.08) 0%,transparent 55%),#FFFFFF;display:flex;align-items:center;justify-content:center;z-index:9999}
 .lbox{background:#fff;border:1px solid var(--border);border-radius:16px;padding:2.5rem 2.25rem;width:380px;box-shadow:0 8px 32px rgba(20,80,138,.1)}
 .llogo{display:flex;align-items:center;gap:10px;margin-bottom:1.25rem}
 .llogo-icon{width:44px;height:44px;background:linear-gradient(135deg,var(--c2),var(--c1));border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;font-weight:700;box-shadow:0 4px 14px rgba(27,117,187,.35)}
@@ -39,7 +36,7 @@ body{padding-top:26px}
 .lhint b{color:var(--tx2)}
 .lerr{color:var(--rd);font-size:12px;margin-top:.5rem;display:none}
 
-#app{display:none;height:calc(100vh - 26px)}
+#app{display:none;height:100vh}
 #app.on{display:flex}
 #sidebar{width:230px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:1rem .75rem;flex-shrink:0}
 .sb-logo{display:flex;align-items:center;gap:10px;padding:.5rem .5rem 1.25rem;position:relative}
@@ -115,7 +112,7 @@ select.f[multiple]{min-height:120px}
 
 #overlay{position:fixed;inset:0;background:rgba(20,30,45,.35);z-index:998;display:none}
 #overlay.on{display:block}
-#drawer{position:fixed;top:26px;right:-460px;width:440px;height:calc(100vh - 26px);background:#fff;border-left:1px solid var(--border);z-index:999;transition:right .22s ease;overflow-y:auto;box-shadow:-8px 0 30px rgba(20,80,138,.15)}
+#drawer{position:fixed;top:0;right:-460px;width:440px;height:100vh;background:#fff;border-left:1px solid var(--border);z-index:999;transition:right .22s ease;overflow-y:auto;box-shadow:-8px 0 30px rgba(20,80,138,.15)}
 #drawer.on{right:0}
 .dr-head{padding:1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start}
 .dr-close{background:none;border:none;color:var(--tx3);font-size:20px}
@@ -148,8 +145,6 @@ select.f[multiple]{min-height:120px}
 }
 /* Móvil: sidebar se convierte en panel deslizable (off-canvas) */
 @media(max-width:760px){
-  #testbanner{font-size:8.5px;padding:0 6px}
-  #testbanner span{padding:1px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96vw}
   #app{position:relative}
   #sb-hamburger{display:block}
   #sb-close{display:block}
@@ -175,13 +170,10 @@ select.f[multiple]{min-height:120px}
 @media(max-width:420px){
   .kpi-grid{grid-template-columns:1fr}
   .cards{grid-template-columns:1fr}
-  #testbanner{font-size:8px}
 }
 </style>
 </head>
 <body>
-
-<div id="testbanner"><span>⚠ Entorno de pruebas — datos simulados en este navegador, sin conexión a producción</span></div>
 
 <div id="login">
   <div class="lbox">
@@ -189,7 +181,7 @@ select.f[multiple]{min-height:120px}
       <div class="llogo-icon">GE</div>
       <div>
         <div class="llogo-text">Gestionador Empresas</div>
-        <div class="llogo-sub">Fase de pruebas</div>
+        <div class="llogo-sub">Sistema de gestión</div>
       </div>
     </div>
     <div class="lfield"><label>Usuario</label><input id="lu" placeholder="usuario"></div>
@@ -212,7 +204,7 @@ select.f[multiple]{min-height:120px}
   <div id="sidebar">
     <div class="sb-logo">
       <div class="sb-logo-icon">GE</div>
-      <div><div class="sb-logo-text">Gestionador Empresas</div><div class="sb-logo-sub">v0.2 pruebas</div></div>
+      <div><div class="sb-logo-text">Gestionador Empresas</div><div class="sb-logo-sub">v1.0</div></div>
       <button id="sb-close" onclick="toggleSidebar(false)">✕</button>
     </div>
     <div id="nav"></div>
@@ -910,7 +902,7 @@ function _mostrarAlertaInactividad(){
   var existing=document.getElementById('inact-warning'); if(existing) existing.remove();
   var div=document.createElement('div');
   div.id='inact-warning';
-  div.style.cssText='position:fixed;top:26px;left:0;right:0;z-index:10001;background:var(--am2);color:#fff;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.2)';
+  div.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10001;background:var(--am2);color:#fff;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;font-size:12.5px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.2)';
   var mins=Math.ceil(_INACT_CLOSE/60000);
   div.innerHTML='<span>⏱ Sesión inactiva — se cerrará en <span id="inact-countdown">'+mins+':00</span> min por seguridad</span>'
     +'<button onclick="_resetInactividad()" style="background:rgba(255,255,255,.25);border:1px solid rgba(255,255,255,.5);border-radius:6px;color:#fff;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:700">Seguir conectado</button>';
